@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\SlotLock;
 use App\Models\Reservation;
+use App\Models\BlockedSlot;
 use Illuminate\Http\Request;
 
 class SlotLockController extends Controller
@@ -25,7 +26,16 @@ class SlotLockController extends Controller
         $date      = $request->date;
         $slot      = $request->time_slot;
 
-        // First check if slot is already permanently booked
+        // Check if slot is blocked by admin first
+        if (BlockedSlot::isBlocked($courtId, $date, $slot)) {
+            return response()->json([
+                'success' => false,
+                'reason'  => 'blocked',
+                'message' => 'This slot is currently unavailable.',
+            ], 409);
+        }
+
+        // Check if slot is already permanently booked
         $booked = Reservation::bookedSlotsFor($courtId, $date);
         if (in_array($slot, $booked)) {
             return response()->json([
@@ -91,7 +101,7 @@ class SlotLockController extends Controller
 
     /**
      * GET /api/slots?court_id=0&date=2026-06-12
-     * Returns booked + locked slots for a court+date.
+     * Returns booked + locked + blocked slots for a court+date.
      */
     public function availability(Request $request)
     {
@@ -107,12 +117,14 @@ class SlotLockController extends Controller
         // Clean up expired locks
         SlotLock::clearExpired();
 
-        $booked = Reservation::bookedSlotsFor($courtId, $date);
-        $locked = SlotLock::lockedSlotsFor($courtId, $date, $sessionId);
+        $booked  = Reservation::bookedSlotsFor($courtId, $date);
+        $locked  = SlotLock::lockedSlotsFor($courtId, $date, $sessionId);
+        $blocked = BlockedSlot::blockedSlotsFor($courtId, $date); // ['slot' => 'reason']
 
         return response()->json([
-            'booked_slots' => array_values($booked),
-            'locked_slots' => array_values($locked), // slots locked by others
+            'booked_slots'  => array_values($booked),
+            'locked_slots'  => array_values($locked), // slots locked by others
+            'blocked_slots' => $blocked,               // {"6:00–7:00 AM": "Tournament Event"}
         ]);
     }
 

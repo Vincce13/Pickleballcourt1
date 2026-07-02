@@ -3,8 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\Reservation;
+use App\Models\BlockedSlot;
+use App\Mail\BookingReceivedMail;
 use App\Http\Requests\StoreReservationRequest;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Log;
 
 class ReservationController extends Controller
 {
@@ -21,7 +25,7 @@ class ReservationController extends Controller
         return view('book', compact('courtId'));
     }
 
-    // POST /book — just save, NO email sent yet
+    // POST /book — save reservation, then send acknowledgement email to user
     public function store(StoreReservationRequest $request)
     {
         $data    = $request->validated();
@@ -36,7 +40,16 @@ class ReservationController extends Controller
             ]);
         }
 
-        // Conflict check
+        // ── Check for blocked slots (admin-blocked, e.g. events/maintenance) ──
+        $blockedMap = BlockedSlot::blockedSlotsFor($courtId, $data['booking_date']);
+        $blockedHit = array_intersect($slots, array_keys($blockedMap));
+        if (!empty($blockedHit)) {
+            return back()->withInput()->withErrors([
+                'time_slots' => 'Some slots are unavailable: ' . implode(', ', $blockedHit),
+            ]);
+        }
+
+        // Conflict check (already booked)
         if (Reservation::hasConflict($courtId, $data['booking_date'], $slots)) {
             $booked    = Reservation::bookedSlotsFor($courtId, $data['booking_date']);
             $conflicts = array_intersect($slots, $booked);
@@ -47,7 +60,7 @@ class ReservationController extends Controller
 
         $totalAmount = count($slots) * $court['price'];
 
-        // Save — no email here
+        // Save reservation
         $reservation = Reservation::create([
             'full_name'        => $data['full_name'],
             'mobile_number'    => $data['mobile_number'],
@@ -62,6 +75,14 @@ class ReservationController extends Controller
             'reference_number' => Reservation::generateReference(),
             'status'           => 'pending',
         ]);
+
+        // ── STEP 1 EMAIL: Booking received — ask user to upload receipt ──
+        try {
+            Mail::to($reservation->email)->send(new BookingReceivedMail($reservation));
+            Log::info("Booking received email sent: {$reservation->reference_number}");
+        } catch (\Exception $e) {
+            Log::error("Booking received email failed: " . $e->getMessage());
+        }
 
         return redirect()->route('reservations.confirmation', $reservation->reference_number);
     }
